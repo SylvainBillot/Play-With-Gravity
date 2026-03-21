@@ -20,8 +20,8 @@ N = 250                 # Number of particles
 h = 0.2                 # Smoothing length
 rho0 = 1.0              # Rest density
 k = 20.0                # Gas stiffness 
-mu = 0.02               # Viscosity coefficient
-dt = 0.0001              # Time step
+mu = 0.01               # Viscosity coefficient
+dt = 0.0001             # Time step
 steps = 1500            # Number of simulation steps
 soft = 0.05             # Softening length for gravity to avoid singularities
 
@@ -109,10 +109,13 @@ def compute_potential_energy(pos, mass):
 
 fig = plt.figure(figsize=(14,7))
 ax1 = fig.add_subplot(121, projection='3d')
+ax1.set_proj_type('persp')  # Enable perspective projection
+ax1.view_init(elev=20, azim=45)  # Set a nice viewing angle
 ax2 = fig.add_subplot(122)
 pos_plot = to_cpu(pos)
 scat = ax1.scatter(pos_plot[:,0], pos_plot[:,1], pos_plot[:,2], s=8, c='cyan')
 ax1.set_xlim(-1,1); ax1.set_ylim(-1,1); ax1.set_zlim(-1,1); ax1.set_facecolor('k')
+ax1.set_box_aspect([1, 1, 1])  # Ensure equal aspect ratio for 3D axes
 ax1.axis('off')
 
 # Energy plots
@@ -125,8 +128,8 @@ line_te, = ax2.plot([], [], 'g-', label='Total Energy')
 ax2.legend()
 ax2.set_xlabel('Time Step')
 ax2.set_ylabel('Energy')
-ax2.set_xlim(0, steps)
-ax2.set_ylim(-10000, 10000)  # Remove fixed ylim to allow autoscaling
+# ax2.set_xlim(0, steps)  # Will be set dynamically in update
+#ax2.set_ylim(-10000, 10000)  # Remove fixed ylim to allow autoscaling
 
 # Mouse wheel zoom/unzoom
 def on_scroll(event):
@@ -179,6 +182,7 @@ def update(frame):
     line_ke.set_data(range(len(ke_list)), ke_list)
     line_pe.set_data(range(len(pe_list)), pe_list)
     line_te.set_data(range(len(te_list)), te_list)
+    ax2.set_xlim(0, len(ke_list))
     ax2.relim()
     ax2.autoscale_view()
     return scat, line_ke, line_pe, line_te
