@@ -55,7 +55,7 @@ def compute_forces(pos, vel, rho, P):
         gradW = spiky_grad(rij, rlen, h)
         pres = -np.sum((P[i]/rho[i]**2 + P/rho**2)[:,None] * mass[:,None] * gradW, axis=0)
         visc = mu * np.sum(((vel - vel[i]) / rho[:,None]) * viscosity_lap(rlen, h)[:,None] * mass[:,None], axis=0)
-        f[i] += pres + visc
+        #f[i] += pres + visc
     # gravity
     for i in range(N):
         rij = pos - pos[i]
@@ -84,8 +84,10 @@ ax1.axis('off')
 # Energy plots
 ke_list = []
 pe_list = []
+te_list = []
 line_ke, = ax2.plot([], [], 'r-', label='Kinetic Energy')
 line_pe, = ax2.plot([], [], 'b-', label='Potential Energy')
+line_te, = ax2.plot([], [], 'g-', label='Total Energy')
 ax2.legend()
 ax2.set_xlabel('Time Step')
 ax2.set_ylabel('Energy')
@@ -130,14 +132,17 @@ def update(frame):
     pos += dt * vel
     ke = 0.5 * np.sum(mass * np.sum(vel**2, axis=1))
     pe = compute_potential_energy(pos, mass)
+    te = ke + pe
     ke_list.append(ke)
     pe_list.append(pe)
+    te_list.append(te)
     scat._offsets3d = (pos[:,0], pos[:,1], pos[:,2])
     line_ke.set_data(range(len(ke_list)), ke_list)
     line_pe.set_data(range(len(pe_list)), pe_list)
+    line_te.set_data(range(len(te_list)), te_list)
     ax2.relim()
     ax2.autoscale_view()
-    return scat, line_ke, line_pe
+    return scat, line_ke, line_pe, line_te
 
 ani = FuncAnimation(fig, update, frames=steps, interval=20, blit=False)
 plt.show()
