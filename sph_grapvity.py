@@ -23,8 +23,8 @@ N = 250                 # Number of particles
 h = 0.2                 # Smoothing length
 rho0 = 1.0              # Rest density
 k = 20.0                # Gas stiffness 
-mu = 0.05               # Viscosity coefficient
-dt = 0.0002             # Time step
+mu = 0.02               # Viscosity coefficient
+dt = 0.001              # Time step
 steps = 1500            # Number of simulation steps
 soft = 0.05             # Softening length for gravity to avoid singularities
 
@@ -59,42 +59,41 @@ def viscosity_lap(rlen, h):
 
 # Compute density and pressure for each particle
 def compute_density_pressure(pos, mass):
-    rho = np.zeros(N, dtype=np.float64)
-    for i in range(N):
-        rij = pos - pos[i]
-        r2 = np.sum(rij * rij, axis=1)
-        rho[i] = np.sum(mass * poly6(r2, h))
+    diff = pos[:, None, :] - pos[None, :, :]
+    r2 = np.sum(diff**2, axis=2)
+    W = poly6(r2, h)
+    rho = np.sum(mass[None, :] * W, axis=1)
     P = k * np.maximum(rho - rho0, to_device_scalar(0.0))
     return rho, P
 
 # Compute forces on each particle from pressure, viscosity, and gravity
 def compute_forces(pos, vel, rho, P):
     f = np.zeros((N,3))
-    # SPH pressure + viscosity
+    
     for i in range(N):
+        # SPH pressure + viscosity
         rij = pos - pos[i]
         rlen = np.linalg.norm(rij, axis=1)
         gradW = spiky_grad(rij, rlen, h)
         pres = -np.sum((P[i]/rho[i]**2 + P/rho**2)[:,None] * mass[:,None] * gradW, axis=0)
         visc = mu * np.sum(((vel - vel[i]) / rho[:,None]) * viscosity_lap(rlen, h)[:,None] * mass[:,None], axis=0)
-        f[i] += pres + visc
-    # gravity
-    for i in range(N):
+
+        # gravity
         rij = pos - pos[i]
         r2 = np.sum(rij*rij, axis=1) + soft**2
         invr3 = 1.0 / (np.sqrt(r2)*r2)
         invr3[i] = 0.0
-        f[i] += G * np.sum(mass[:,None] * rij * invr3[:,None], axis=0)
+        grav = G * np.sum(mass[:,None] * rij * invr3[:,None], axis=0)
+        f[i] += pres + visc + grav
     return f
 
 # Compute potential energy of the system
 def compute_potential_energy(pos, mass):
-    pe = 0.0
-    for i in range(N):
-        for j in range(i+1, N):
-            rij = pos[i] - pos[j]
-            r = np.sqrt(np.sum(rij**2) + soft**2)
-            pe -= G * mass[i] * mass[j] / r
+    diff = pos[:, None, :] - pos[None, :, :]
+    r2 = np.sum(diff**2, axis=2) + soft**2
+    r = np.sqrt(r2)
+    mass_matrix = mass[:, None] * mass[None, :]
+    pe = -G * np.sum(np.triu(mass_matrix / r, k=1))
     return pe
 
 fig = plt.figure(figsize=(14,7))
