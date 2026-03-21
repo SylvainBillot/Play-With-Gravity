@@ -6,9 +6,6 @@ from matplotlib.animation import FuncAnimation
 def asarray(a):
     return np.asarray(a, dtype=np.float64)
 
-def asnumpy(a):
-    return np.asarray(a)
-
 def to_device_scalar(x):
     return np.array(x, dtype=np.float64)
 
@@ -24,7 +21,7 @@ h = 0.2                 # Smoothing length
 rho0 = 1.0              # Rest density
 k = 20.0                # Gas stiffness 
 mu = 0.02               # Viscosity coefficient
-dt = 0.001              # Time step
+dt = 0.0001              # Time step
 steps = 1500            # Number of simulation steps
 soft = 0.05             # Softening length for gravity to avoid singularities
 
@@ -68,23 +65,37 @@ def compute_density_pressure(pos, mass):
 
 # Compute forces on each particle from pressure, viscosity, and gravity
 def compute_forces(pos, vel, rho, P):
-    f = np.zeros((N,3))
+    diff = pos[:, None, :] - pos[None, :, :]  # (N, N, 3), diff[i,j] = pos[i] - pos[j]
+    rlen = np.linalg.norm(diff, axis=2)  # (N, N)
+    r2 = np.sum(diff**2, axis=2)  # (N, N)
     
-    for i in range(N):
-        # SPH pressure + viscosity
-        rij = pos - pos[i]
-        rlen = np.linalg.norm(rij, axis=1)
-        gradW = spiky_grad(rij, rlen, h)
-        pres = -np.sum((P[i]/rho[i]**2 + P/rho**2)[:,None] * mass[:,None] * gradW, axis=0)
-        visc = mu * np.sum(((vel - vel[i]) / rho[:,None]) * viscosity_lap(rlen, h)[:,None] * mass[:,None], axis=0)
-
-        # gravity
-        rij = pos - pos[i]
-        r2 = np.sum(rij*rij, axis=1) + soft**2
-        invr3 = 1.0 / (np.sqrt(r2)*r2)
-        invr3[i] = 0.0
-        grav = G * np.sum(mass[:,None] * rij * invr3[:,None], axis=0)
-        f[i] += pres + visc + grav
+    # SPH pressure
+    r_for_grad = -diff  # pos[j] - pos[i]
+    mask = (rlen > 1e-12) & (rlen < h)
+    coef = -45.0 / (np.pi * h**6) * (h - rlen[mask])**2
+    gradW_matrix = np.zeros((N, N, 3))
+    gradW_matrix[mask] = coef[:, None] * r_for_grad[mask] / rlen[mask, None]
+    
+    P_i = P[:, None] / rho[:, None]**2  # (N, 1)
+    P_j = P[None, :] / rho[None, :]**2  # (1, N)
+    total_P = P_i + P_j  # (N, N)
+    mass_j = mass[None, :]  # (1, N)
+    pres_matrix = -total_P[:, :, None] * mass_j[:, :, None] * gradW_matrix
+    f_pres = np.sum(pres_matrix, axis=1)
+    
+    # Viscosity
+    visc_lap = np.where((rlen > 0) & (rlen < h), 45.0 / (np.pi * h**6) * (h - rlen), 0.0)
+    vel_diff = vel[:, None, :] - vel[None, :, :]  # vel[i] - vel[j]
+    visc_matrix = mu * ((-vel_diff) / rho[None, :, None]) * visc_lap[:, :, None] * mass_j[:, :, None]
+    f_visc = np.sum(visc_matrix, axis=1)
+    
+    # Gravity
+    r2_grav = r2 + soft**2
+    invr3 = 1.0 / (np.sqrt(r2_grav) * r2_grav)
+    np.fill_diagonal(invr3, 0.0)
+    f_grav = G * np.sum(mass_j[:, :, None] * (-diff) * invr3[:, :, None], axis=1)
+    
+    f = f_pres + f_visc + f_grav
     return f
 
 # Compute potential energy of the system
@@ -115,7 +126,7 @@ ax2.legend()
 ax2.set_xlabel('Time Step')
 ax2.set_ylabel('Energy')
 ax2.set_xlim(0, steps)
-# ax2.set_ylim(-50, 50)  # Remove fixed ylim to allow autoscaling
+ax2.set_ylim(-10000, 10000)  # Remove fixed ylim to allow autoscaling
 
 # Mouse wheel zoom/unzoom
 def on_scroll(event):
