@@ -2,18 +2,31 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
 
+# helpers
+def asarray(a):
+    return np.asarray(a, dtype=np.float64)
+
+def asnumpy(a):
+    return np.asarray(a)
+
+def to_device_scalar(x):
+    return np.array(x, dtype=np.float64)
+
+def to_cpu(a):
+    return a
+
 #!/usr/bin/env python3
 
 # SPH + self-gravity 3D particles
-G = 1.0
-N = 250
-h = 0.2
-rho0 = 1.0
-k = 20.0
-mu = 0.05
-dt = 0.002
-steps = 1500
-soft = 0.05
+G = 1.0                 # Gravitational constant
+N = 250                 # Number of particles
+h = 0.2                 # Smoothing length
+rho0 = 1.0              # Rest density
+k = 20.0                # Gas stiffness 
+mu = 0.05               # Viscosity coefficient
+dt = 0.0002             # Time step
+steps = 1500            # Number of simulation steps
+soft = 0.05             # Softening length for gravity to avoid singularities
 
 
 rng = np.random.default_rng(42)
@@ -21,10 +34,16 @@ pos = rng.uniform(-1.0, 1.0, (N, 3)) * 0.7
 vel = rng.normal(scale=0.05, size=(N, 3))
 mass = np.ones(N) * 0.05
 
+pos = asarray(pos)
+vel = asarray(vel)
+mass = asarray(mass)
+
+# SPH kernel functions
 def poly6(r2, h):
     hr2 = h*h - r2
     return np.where(r2 < h*h, 315.0 / (64*np.pi*h**9) * hr2**3, 0.0)
 
+# Gradient of spiky kernel
 def spiky_grad(r, rlen, h):
     mask = (rlen > 1e-12) & (rlen < h)
     coef = -45.0 / (np.pi*h**6) * (h - rlen[mask])**2
@@ -32,20 +51,23 @@ def spiky_grad(r, rlen, h):
     out[mask] = coef[:, None] * r[mask] / rlen[mask, None]
     return out
 
+# Viscosity Laplacian
 def viscosity_lap(rlen, h):
     return np.where((rlen>0) & (rlen<h),
                     45.0 / (np.pi*h**6) * (h - rlen),
                     0.0)
 
+# Compute density and pressure for each particle
 def compute_density_pressure(pos, mass):
-    rho = np.zeros(N)
+    rho = np.zeros(N, dtype=np.float64)
     for i in range(N):
         rij = pos - pos[i]
-        r2 = np.sum(rij*rij, axis=1)
+        r2 = np.sum(rij * rij, axis=1)
         rho[i] = np.sum(mass * poly6(r2, h))
-    P = k * np.maximum(rho - rho0, 0.0)
+    P = k * np.maximum(rho - rho0, to_device_scalar(0.0))
     return rho, P
 
+# Compute forces on each particle from pressure, viscosity, and gravity
 def compute_forces(pos, vel, rho, P):
     f = np.zeros((N,3))
     # SPH pressure + viscosity
@@ -55,7 +77,7 @@ def compute_forces(pos, vel, rho, P):
         gradW = spiky_grad(rij, rlen, h)
         pres = -np.sum((P[i]/rho[i]**2 + P/rho**2)[:,None] * mass[:,None] * gradW, axis=0)
         visc = mu * np.sum(((vel - vel[i]) / rho[:,None]) * viscosity_lap(rlen, h)[:,None] * mass[:,None], axis=0)
-        #f[i] += pres + visc
+        f[i] += pres + visc
     # gravity
     for i in range(N):
         rij = pos - pos[i]
@@ -65,6 +87,7 @@ def compute_forces(pos, vel, rho, P):
         f[i] += G * np.sum(mass[:,None] * rij * invr3[:,None], axis=0)
     return f
 
+# Compute potential energy of the system
 def compute_potential_energy(pos, mass):
     pe = 0.0
     for i in range(N):
@@ -77,7 +100,8 @@ def compute_potential_energy(pos, mass):
 fig = plt.figure(figsize=(14,7))
 ax1 = fig.add_subplot(121, projection='3d')
 ax2 = fig.add_subplot(122)
-scat = ax1.scatter(pos[:,0], pos[:,1], pos[:,2], s=8, c='cyan')
+pos_plot = to_cpu(pos)
+scat = ax1.scatter(pos_plot[:,0], pos_plot[:,1], pos_plot[:,2], s=8, c='cyan')
 ax1.set_xlim(-1,1); ax1.set_ylim(-1,1); ax1.set_zlim(-1,1); ax1.set_facecolor('k')
 ax1.axis('off')
 
@@ -124,19 +148,24 @@ def on_scroll(event):
 
 fig.canvas.mpl_connect('scroll_event', on_scroll)
 
+# Animation update function
 def update(frame):
     global pos, vel
     rho, P = compute_density_pressure(pos, mass)
     F = compute_forces(pos, vel, rho, P)
     vel += dt * (F / mass[:,None])
     pos += dt * vel
-    ke = 0.5 * np.sum(mass * np.sum(vel**2, axis=1))
-    pe = compute_potential_energy(pos, mass)
+
+    ke = float(0.5 * np.sum(mass * np.sum(vel**2, axis=1)))
+    pe = float(compute_potential_energy(pos, mass))
     te = ke + pe
+
     ke_list.append(ke)
     pe_list.append(pe)
     te_list.append(te)
-    scat._offsets3d = (pos[:,0], pos[:,1], pos[:,2])
+
+    pos_plot = to_cpu(pos)
+    scat._offsets3d = (pos_plot[:,0], pos_plot[:,1], pos_plot[:,2])
     line_ke.set_data(range(len(ke_list)), ke_list)
     line_pe.set_data(range(len(pe_list)), pe_list)
     line_te.set_data(range(len(te_list)), te_list)
