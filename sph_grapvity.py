@@ -16,18 +16,27 @@ def to_cpu(a):
 
 # SPH + self-gravity 3D particles
 G = 1.0                 # Gravitational constant
-N = 250                 # Number of particles
-h = 0.2                 # Smoothing length
-rho0 = 1.0              # Rest density
+N = 500                 # Number of particles
+h = 0.1                 # Smoothing length
+rho0 = 0.01              # Rest density
 k = 20.0                # Gas stiffness 
 mu = 0.01               # Viscosity coefficient
 dt = 0.0001             # Time step
 steps = 1500            # Number of simulation steps
-soft = 0.05             # Softening length for gravity to avoid singularities
+soft = 0.01             # Softening length for gravity to avoid singularities
 
 
 rng = np.random.default_rng(42)
-pos = rng.uniform(-1.0, 1.0, (N, 3)) * 0.7
+# Generate uniform distribution inside a sphere of radius 1.0
+radius = 0.7
+r = radius * rng.uniform(0, 1, N)**(1/3)  # uniform in volume
+cos_theta = rng.uniform(-1, 1, N)  # uniform in cosine to avoid pole clustering
+theta = np.arccos(cos_theta)
+phi = rng.uniform(0, 2*np.pi, N)
+x = r * np.sin(theta) * np.cos(phi)
+y = r * np.sin(theta) * np.sin(phi)
+z = r * cos_theta
+pos = np.column_stack([x, y, z])
 vel = rng.normal(scale=0.05, size=(N, 3))
 mass = np.ones(N) * 0.05
 
