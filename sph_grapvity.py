@@ -15,6 +15,7 @@ dt = 0.0002
 steps = 1500
 soft = 0.05
 
+
 rng = np.random.default_rng(42)
 pos = rng.uniform(-1.0, 1.0, (N, 3)) * 0.7
 vel = rng.normal(scale=0.05, size=(N, 3))
