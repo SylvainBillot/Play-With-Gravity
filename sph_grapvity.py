@@ -18,13 +18,12 @@ def to_cpu(a):
 G = 1.0                 # Gravitational constant
 N = 500                 # Number of particles
 h = 0.1                 # Smoothing length
-rho0 = 0.01              # Rest density
+rho0 = 0.1              # Rest density
 k = 20.0                # Gas stiffness 
 mu = 0.01               # Viscosity coefficient
 dt = 0.0001             # Time step
 steps = 1500            # Number of simulation steps
-soft = 0.01             # Softening length for gravity to avoid singularities
-
+soft = 0.02             # Softening length for gravity to avoid singularities
 
 rng = np.random.default_rng(42)
 # Generate uniform distribution inside a sphere of radius 1.0
@@ -80,10 +79,10 @@ def compute_forces(pos, vel, rho, P):
     
     # SPH pressure
     r_for_grad = -diff  # pos[j] - pos[i]
-    mask = (rlen > 1e-12) & (rlen < h)
-    coef = -45.0 / (np.pi * h**6) * (h - rlen[mask])**2
-    gradW_matrix = np.zeros((N, N, 3))
-    gradW_matrix[mask] = coef[:, None] * r_for_grad[mask] / rlen[mask, None]
+    mask = (rlen > 1e-12) & (rlen < h) # Avoid division by zero and limit to smoothing length
+    coef = -45.0 / (np.pi * h**6) * (h - rlen[mask])**2 # Only compute for pairs within smoothing length
+    gradW_matrix = np.zeros((N, N, 3)) # Preallocate gradient matrix 
+    gradW_matrix[mask] = coef[:, None] * r_for_grad[mask] / rlen[mask, None] # (N, N, 3)
     
     P_i = P[:, None] / rho[:, None]**2  # (N, 1)
     P_j = P[None, :] / rho[None, :]**2  # (1, N)
