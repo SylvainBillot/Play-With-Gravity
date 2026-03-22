@@ -1,1 +1,71 @@
 Simple gravity simulator with Smoothed Particle Hydrodynamics
+# SPH Gravity Simulation
+
+This project is a Python implementation of a Smoothed Particle Hydrodynamics (SPH) simulation with self-gravity for 3D particles. The code uses NumPy for numerical computations and Matplotlib for visualization.
+
+## Table of Contents
+
+[Installation](#installation)
+
+[Usage](#usage)
+
+[Code Structure](#code-structure)
+
+[Dependencies](#dependencies)
+
+[License](#license)
+
+
+## Installation
+
+To run this project, you need to have Python 3 installed. You can install the required dependencies using pip:
+
+``bash
+pip install numpy matplotlib
+`
+
+## Usage
+
+To run the simulation, simply execute the sph_gravity.py script:
+
+`bash
+python sph_gravity.py
+`
+
+This will start the simulation and display a 3D plot of the particles along with energy plots.
+
+## Code Structure
+
+The code is organized into several functions and a main execution loop. Here's a brief overview:
+
+Helpers: Functions like asarray, to_device_scalar, and to_cpu are used for data type conversions.
+
+Constants: Simulation parameters such as gravitational constant, number of particles, and time step are defined.
+
+Data Initialization: Randomly generate initial particle positions, velocities, and masses within a sphere.
+
+SPH Kernel Functions: Functions like poly6, spiky_grad, and viscosity_lap implement the SPH kernels.
+
+Density and Pressure Calculation: compute_density_pressure computes the density and pressure for each particle.
+
+Force Computation: compute_forces calculates the forces on each particle due to pressure, viscosity, and gravity.
+
+Potential Energy: compute_potential_energy` calculates the potential energy of the system.
+
+Visualization: The simulation is visualized using Matplotlib, with real-time updates of particle positions and energy plots.
+
+
+## Dependencies
+
+NumPy: For numerical computations.
+
+Matplotlib: For visualization.
+
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+---
+
+This README provides a clear overview of the project, its usage, and the dependencies required to run it.
