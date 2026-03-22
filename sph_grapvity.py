@@ -25,6 +25,8 @@ dt = 0.0001             # Time step
 steps = 1500            # Number of simulation steps
 soft = 0.02             # Softening length for gravity to avoid singularities
 
+dotsize = 10            # Adjust dot size based on number of particles for better visibility
+
 rng = np.random.default_rng(42)
 # Generate uniform distribution inside a sphere of radius 1.0
 radius = 0.7
@@ -33,11 +35,11 @@ cos_theta = rng.uniform(-1, 1, N)  # uniform in cosine to avoid pole clustering
 theta = np.arccos(cos_theta)
 phi = rng.uniform(0, 2*np.pi, N)
 x = r * np.sin(theta) * np.cos(phi)
-y = r * np.sin(theta) * np.sin(phi)
+y = r * np.sin(theta) * np.sin(phi) 
 z = r * cos_theta
 pos = np.column_stack([x, y, z])
 vel = rng.normal(scale=0.05, size=(N, 3))
-mass = np.ones(N) * 0.05
+mass = rng.uniform(0.01, 0.1, N)
 
 pos = asarray(pos)
 vel = asarray(vel)
@@ -121,7 +123,7 @@ ax1.set_proj_type('persp')  # Enable perspective projection
 ax1.view_init(elev=20, azim=45)  # Set a nice viewing angle
 ax2 = fig.add_subplot(122)
 pos_plot = to_cpu(pos)
-scat = ax1.scatter(pos_plot[:,0], pos_plot[:,1], pos_plot[:,2], s=8, c='cyan')
+scat = ax1.scatter(pos_plot[:,0], pos_plot[:,1], pos_plot[:,2], s=np.sqrt(mass) * dotsize, c='cyan')
 ax1.set_xlim(-1,1); ax1.set_ylim(-1,1); ax1.set_zlim(-1,1); ax1.set_facecolor('k')
 ax1.set_box_aspect([1, 1, 1])  # Ensure equal aspect ratio for 3D axes
 ax1.axis('off')
@@ -136,8 +138,6 @@ line_te, = ax2.plot([], [], 'g-', label='Total Energy')
 ax2.legend()
 ax2.set_xlabel('Time Step')
 ax2.set_ylabel('Energy')
-# ax2.set_xlim(0, steps)  # Will be set dynamically in update
-#ax2.set_ylim(-10000, 10000)  # Remove fixed ylim to allow autoscaling
 
 # Mouse wheel zoom/unzoom
 def on_scroll(event):
