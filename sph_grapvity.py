@@ -1,5 +1,5 @@
 import numpy as np
-from numba import njit
+from numba import njit, prange
 from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
     
@@ -11,10 +11,6 @@ def asarray(a):
 @njit
 def to_device_scalar(x):
     return np.array(x, dtype=np.float64)
-
-@njit
-def to_cpu(a):
-    return a
 
 #!/usr/bin/env python3
 
@@ -50,98 +46,132 @@ vel = asarray(vel)
 mass = asarray(mass)
 
 # Compute density and pressure for each particle
-@njit
-def compute_density_pressure(pos, mass):
-    diff = pos[:, None, :] - pos[None, :, :]
-    r2 = np.sum(diff**2, axis=2)
-    hr2 = h**2 - r2
-    W = np.where(r2 < h**2, 315.0 / (64*np.pi*h**9) * hr2**3, 0.0)
-    rho = np.sum(W * mass[None, :], axis=1)
-    P = k * np.maximum(rho - rho0, to_device_scalar(0.0))
+@njit(fastmath=True, parallel=True)
+def compute_density_pressure_optimized(pos, mass):
+    N = pos.shape[0]
+    rho = np.zeros(N)
+    h2 = h**2
+    # Constant for the Poly6 kernel
+    poly6_factor = 315.0 / (64.0 * np.pi * h**9)
+
+    for i in prange(N):
+        for j in range(N):
+            dx = pos[i, 0] - pos[j, 0]
+            dy = pos[i, 1] - pos[j, 1]
+            dz = pos[i, 2] - pos[j, 2]
+            r2 = dx*dx + dy*dy + dz*dz
+            
+            if r2 < h2:
+                rho[i] += mass[j] * poly6_factor * (h2 - r2)**3
+    
+    # Pressure calculation (vectorized on result is fine)
+    P = k * np.maximum(rho - rho0, 0.0)
     return rho, P
 
-# Compute the gradient of the kernel function W for each particle pair
-@njit
-def compute_grad_w(rlen, r_for_grad, h):
-    N = rlen.shape[0]
-    # Initialize the output matrix with zeros
-    gradW_matrix = np.zeros((N, N, 3))
+# Optimized version of compute_forces with manual loop unrolling and reduced redundant calculations
+@njit(fastmath=True, parallel=True)
+def compute_forces_optimized(pos, vel, mass, rho, P, h, mu, G, soft):
+    N = pos.shape[0]
+    f = np.zeros((N, 3), dtype=np.float64)
     
+    # Precompute constants
     prefactor = -45.0 / (np.pi * h**6)
-    
-    for i in range(N):
+    visc_prefactor = 45.0 / (np.pi * h**6)
+    soft2 = soft**2
+
+    for i in prange(N):
+        f_ix, f_iy, f_iz = 0.0, 0.0, 0.0
+        
+        # Cache i-particle data
+        pi = pos[i]
+        vi = vel[i]
+        rho_i = rho[i]
+        # Original: P_i = P / rho**2
+        p_rho_i = P[i] / (rho_i**2)
+        
         for j in range(N):
-            r_ij = rlen[i, j]
+            if i == j: continue
             
-            # This replaces your 'mask' logic
-            if 1e-12 < r_ij < h:
-                # Calculate the scalar coefficient for this specific pair
-                coef = prefactor * (h - r_ij)**2
+            # 1. Replicate: diff = pos[i] - pos[j]
+            dx = pi[0] - pos[j, 0]
+            dy = pi[1] - pos[j, 1]
+            dz = pi[2] - pos[j, 2]
+            r2 = dx*dx + dy*dy + dz*dz
+            dist = np.sqrt(r2)
+
+            # --- Gravity (Original: f_grav = G * sum(mass_j * (-diff) * invr3)) ---
+            r2_grav = r2 + soft2
+            inv_r3 = (G * mass[j]) / (r2_grav * np.sqrt(r2_grav))
+            # Note the minus sign to match (-diff)
+            f_ix -= dx * inv_r3
+            f_iy -= dy * inv_r3
+            f_iz -= dz * inv_r3
+
+            # --- SPH Pressure & Viscosity ---
+            if 1e-12 < dist < h:
+                h_r = h - dist
                 
-                # Update the gradient (3 components: x, y, z)
-                # This replaces: coef * r_for_grad / rlen
-                for k in range(3):
-                    gradW_matrix[i, j, k] = coef * r_for_grad[i, j, k] / r_ij
-                    
-    return gradW_matrix
+                # A. Pressure
+                # Original logic: pres_matrix = -(P_i + P_j) * mass_j * gradW
+                # Where gradW = prefactor * (h-dist)^2 * (r_for_grad / dist)
+                # And r_for_grad = -diff
+                
+                # Corrected scalar: -(P_i + P_j) * mass_j * prefactor * (h-r)^2 / r
+                # Since r_for_grad = -diff, the two negatives cancel out.
+                p_term = (p_rho_i + P[j]/(rho[j]**2)) * mass[j]
+                # We multiply by dx (the 'diff' component)
+                p_scalar = p_term * prefactor * (h_r**2) / dist
+                
+                f_ix += dx * p_scalar
+                f_iy += dy * p_scalar
+                f_iz += dz * p_scalar
 
-# Compute forces on each particle from pressure, viscosity, and gravity
-@njit
-def compute_forces(pos, vel, rho, P):
-    diff = pos[:, None, :] - pos[None, :, :]  # (N, N, 3), diff[i,j] = pos[i] - pos[j]
-    rlen = np.sqrt(np.sum(diff**2, axis=2))  # (N, N) More efficient than np.linalg.norm for large arrays
-    r2 = np.sum(diff**2, axis=2)  # (N, N)
-    
-    # SPH pressure
-    r_for_grad = -diff  # pos[j] - pos[i]
-    # Create the mask as usual
-    mask = (rlen > 1e-12) & (rlen < h)
-    # Initialize coef with zeros so the shape is always consistent
-    coef = np.zeros_like(rlen)
-    # Use np.where to calculate only where the mask is true, 
-    # otherwise keep it as 0.0
-    coef = np.where(mask, -45.0 / (np.pi * h**6) * (h - rlen)**2, 0.0)
+                # B. Viscosity
+                # Original logic: mu * (-vel_diff / rho_j) * visc_lap * mass_j
+                # vel_diff = vel[i] - vel[j]
+                v_scalar = mu * (mass[j] / rho[j]) * (visc_prefactor * h_r)
+                f_ix -= (vi[0] - vel[j, 0]) * v_scalar
+                f_iy -= (vi[1] - vel[j, 1]) * v_scalar
+                f_iz -= (vi[2] - vel[j, 2]) * v_scalar
 
-    gradW_matrix = compute_grad_w(rlen, r_for_grad, h)
-    
-    P_i = P[:, None] / rho[:, None]**2  # (N, 1)
-    P_j = P[None, :] / rho[None, :]**2  # (1, N)
-    total_P = P_i + P_j  # (N, N)
-    mass_j = mass[None, :]  # (1, N)
-    pres_matrix = -total_P[:, :, None] * mass_j[:, :, None] * gradW_matrix
-    f_pres = np.sum(pres_matrix, axis=1)
-    
-    # Viscosity
-    visc_lap = np.where((rlen > 0) & (rlen < h), 45.0 / (np.pi * h**6) * (h - rlen), 0.0)
-    vel_diff = vel[:, None, :] - vel[None, :, :]  # vel[i] - vel[j]
-    visc_matrix = mu * ((-vel_diff) / rho[None, :, None]) * visc_lap[:, :, None] * mass_j[:, :, None]
-    f_visc = np.sum(visc_matrix, axis=1)
-    
-    # Gravity
-    r2_grav = r2 + soft**2
-    invr3 = 1.0 / (np.sqrt(r2_grav) * r2_grav)
-    np.fill_diagonal(invr3, 0.0)
-    f_grav = G * np.sum(mass_j[:, :, None] * (-diff) * invr3[:, :, None], axis=1)
-    
-    f = f_pres + f_visc + f_grav
+        f[i, 0] = f_ix
+        f[i, 1] = f_iy
+        f[i, 2] = f_iz
+        
     return f
 
 # Compute potential energy of the system
-@njit
-def compute_potential_energy(pos, mass):
-    diff = pos[:, None, :] - pos[None, :, :]
-    r2 = np.sum(diff**2, axis=2) + soft**2
-    r = np.sqrt(r2)
-    mass_matrix = mass[:, None] * mass[None, :]
-    pe = -G * np.sum(np.triu(mass_matrix / r, k=1))
-    return pe
+@njit(fastmath=True, parallel=True)
+def compute_potential_energy_optimized(pos, mass, G, soft):
+    N = pos.shape[0]
+    total_pe = 0.0
+    soft2 = soft**2
+    
+    # prange distributes the outer loop across CPU cores
+    # We use a scalar accumulator to avoid allocating N*N matrices
+    for i in prange(N):
+        sub_pe = 0.0
+        # Symmetry: only calculate for j > i
+        for j in range(i + 1, N):
+            dx = pos[i, 0] - pos[j, 0]
+            dy = pos[i, 1] - pos[j, 1]
+            dz = pos[i, 2] - pos[j, 2]
+            
+            r2 = dx*dx + dy*dy + dz*dz + soft2
+            
+            # Potential Energy = -G * (m1 * m2) / r
+            sub_pe += (mass[i] * mass[j]) / np.sqrt(r2)
+        
+        total_pe += sub_pe
+        
+    return -G * total_pe
 
 fig = plt.figure(figsize=(14,7))
 ax1 = fig.add_subplot(121, projection='3d')
 ax1.set_proj_type('persp')  # Enable perspective projection
 ax1.view_init(elev=20, azim=45)  # Set a nice viewing angle
 ax2 = fig.add_subplot(122)
-pos_plot = to_cpu(pos)
+pos_plot = pos
 scat = ax1.scatter(pos_plot[:,0], pos_plot[:,1], pos_plot[:,2], s=np.sqrt(mass) * dotsize, c='cyan')
 ax1.set_xlim(-1,1); ax1.set_ylim(-1,1); ax1.set_zlim(-1,1); ax1.set_facecolor('k')
 ax1.set_box_aspect([1, 1, 1])  # Ensure equal aspect ratio for 3D axes
@@ -192,23 +222,32 @@ def on_scroll(event):
 
 fig.canvas.mpl_connect('scroll_event', on_scroll)
 
+# Combined function to update position, velocity, and calculate kinetic energy in one pass
+@njit(fastmath=True)
+def integrate_and_ke(pos, vel, F, mass, dt):
+    # Update velocity and position
+    accel = F / mass[:, np.newaxis]
+    vel += accel * dt
+    pos += vel * dt
+    
+    # Calculate Kinetic Energy in the same pass
+    ke = 0.5 * np.sum(mass * np.sum(vel**2, axis=1))
+    return ke
+
 # Animation update function
 def update(frame):
     global pos, vel, energy_text_obj
-    rho, P = compute_density_pressure(pos, mass)
-    F = compute_forces(pos, vel, rho, P)
-    vel += dt * (F / mass[:,None])
-    pos += dt * vel
-
-    ke = float(0.5 * np.sum(mass * np.sum(vel**2, axis=1)))
-    pe = float(compute_potential_energy(pos, mass))
+    rho, P = compute_density_pressure_optimized(pos, mass)
+    F = compute_forces_optimized(pos, vel, mass, rho, P, h, mu, G, soft)
+    ke = integrate_and_ke(pos, vel, F, mass, dt)
+    pe = float(compute_potential_energy_optimized(pos, mass, G, soft))
     te = ke + pe
   
     ke_list.append(ke)
     pe_list.append(pe)
     te_list.append(te)
 
-    pos_plot = to_cpu(pos)
+    pos_plot = pos
     scat._offsets3d = (pos_plot[:,0], pos_plot[:,1], pos_plot[:,2])
 
     line_ke.set_data(range(len(ke_list)), ke_list)
@@ -225,5 +264,5 @@ def update(frame):
 
     return scat, line_ke, line_pe, line_te
 
-ani = FuncAnimation(fig, update, frames=steps, interval=20, blit=False)
+ani = FuncAnimation(fig, update, frames=steps, interval=0, blit=False)
 plt.show()
