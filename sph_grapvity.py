@@ -139,6 +139,10 @@ ax2.legend()
 ax2.set_xlabel('Time Step')
 ax2.set_ylabel('Energy')
 
+# Create energy text at figure level
+energy_text_obj = fig.text(0.5, 0.02, '', ha='center', va='bottom', fontsize=11, 
+                           bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
 # Mouse wheel zoom/unzoom
 def on_scroll(event):
     base_scale = 1.15
@@ -171,7 +175,7 @@ fig.canvas.mpl_connect('scroll_event', on_scroll)
 
 # Animation update function
 def update(frame):
-    global pos, vel
+    global pos, vel, energy_text_obj
     rho, P = compute_density_pressure(pos, mass)
     F = compute_forces(pos, vel, rho, P)
     vel += dt * (F / mass[:,None])
@@ -180,19 +184,26 @@ def update(frame):
     ke = float(0.5 * np.sum(mass * np.sum(vel**2, axis=1)))
     pe = float(compute_potential_energy(pos, mass))
     te = ke + pe
-
+  
     ke_list.append(ke)
     pe_list.append(pe)
     te_list.append(te)
 
     pos_plot = to_cpu(pos)
     scat._offsets3d = (pos_plot[:,0], pos_plot[:,1], pos_plot[:,2])
+
     line_ke.set_data(range(len(ke_list)), ke_list)
     line_pe.set_data(range(len(pe_list)), pe_list)
     line_te.set_data(range(len(te_list)), te_list)
+    
     ax2.set_xlim(0, len(ke_list))
     ax2.relim()
     ax2.autoscale_view()
+    
+    # Update energy text
+    energy_text = f'KE: {ke:.4f} | PE: {pe:.4f} | TE: {te:.4f}'
+    energy_text_obj.set_text(energy_text)
+
     return scat, line_ke, line_pe, line_te
 
 ani = FuncAnimation(fig, update, frames=steps, interval=20, blit=False)
