@@ -1,14 +1,18 @@
 import numpy as np
+from numba import njit
 from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
-
+    
 # helpers
+@njit
 def asarray(a):
     return np.asarray(a, dtype=np.float64)
 
+@njit
 def to_device_scalar(x):
     return np.array(x, dtype=np.float64)
 
+@njit
 def to_cpu(a):
     return a
 
@@ -45,46 +49,60 @@ pos = asarray(pos)
 vel = asarray(vel)
 mass = asarray(mass)
 
-# SPH kernel functions
-def poly6(r2, h):
-    hr2 = h*h - r2
-    return np.where(r2 < h*h, 315.0 / (64*np.pi*h**9) * hr2**3, 0.0)
-
-# Gradient of spiky kernel
-def spiky_grad(r, rlen, h):
-    mask = (rlen > 1e-12) & (rlen < h)
-    coef = -45.0 / (np.pi*h**6) * (h - rlen[mask])**2
-    out = np.zeros_like(r)
-    out[mask] = coef[:, None] * r[mask] / rlen[mask, None]
-    return out
-
-# Viscosity Laplacian
-def viscosity_lap(rlen, h):
-    return np.where((rlen>0) & (rlen<h),
-                    45.0 / (np.pi*h**6) * (h - rlen),
-                    0.0)
-
 # Compute density and pressure for each particle
+@njit
 def compute_density_pressure(pos, mass):
     diff = pos[:, None, :] - pos[None, :, :]
     r2 = np.sum(diff**2, axis=2)
-    W = poly6(r2, h)
-    rho = np.sum(mass[None, :] * W, axis=1)
+    hr2 = h**2 - r2
+    W = np.where(r2 < h**2, 315.0 / (64*np.pi*h**9) * hr2**3, 0.0)
+    rho = np.sum(W * mass[None, :], axis=1)
     P = k * np.maximum(rho - rho0, to_device_scalar(0.0))
     return rho, P
 
+# Compute the gradient of the kernel function W for each particle pair
+@njit
+def compute_grad_w(rlen, r_for_grad, h):
+    N = rlen.shape[0]
+    # Initialize the output matrix with zeros
+    gradW_matrix = np.zeros((N, N, 3))
+    
+    prefactor = -45.0 / (np.pi * h**6)
+    
+    for i in range(N):
+        for j in range(N):
+            r_ij = rlen[i, j]
+            
+            # This replaces your 'mask' logic
+            if 1e-12 < r_ij < h:
+                # Calculate the scalar coefficient for this specific pair
+                coef = prefactor * (h - r_ij)**2
+                
+                # Update the gradient (3 components: x, y, z)
+                # This replaces: coef * r_for_grad / rlen
+                for k in range(3):
+                    gradW_matrix[i, j, k] = coef * r_for_grad[i, j, k] / r_ij
+                    
+    return gradW_matrix
+
 # Compute forces on each particle from pressure, viscosity, and gravity
+@njit
 def compute_forces(pos, vel, rho, P):
     diff = pos[:, None, :] - pos[None, :, :]  # (N, N, 3), diff[i,j] = pos[i] - pos[j]
-    rlen = np.linalg.norm(diff, axis=2)  # (N, N)
+    rlen = np.sqrt(np.sum(diff**2, axis=2))  # (N, N) More efficient than np.linalg.norm for large arrays
     r2 = np.sum(diff**2, axis=2)  # (N, N)
     
     # SPH pressure
     r_for_grad = -diff  # pos[j] - pos[i]
-    mask = (rlen > 1e-12) & (rlen < h) # Avoid division by zero and limit to smoothing length
-    coef = -45.0 / (np.pi * h**6) * (h - rlen[mask])**2 # Only compute for pairs within smoothing length
-    gradW_matrix = np.zeros((N, N, 3)) # Preallocate gradient matrix 
-    gradW_matrix[mask] = coef[:, None] * r_for_grad[mask] / rlen[mask, None] # (N, N, 3)
+    # Create the mask as usual
+    mask = (rlen > 1e-12) & (rlen < h)
+    # Initialize coef with zeros so the shape is always consistent
+    coef = np.zeros_like(rlen)
+    # Use np.where to calculate only where the mask is true, 
+    # otherwise keep it as 0.0
+    coef = np.where(mask, -45.0 / (np.pi * h**6) * (h - rlen)**2, 0.0)
+
+    gradW_matrix = compute_grad_w(rlen, r_for_grad, h)
     
     P_i = P[:, None] / rho[:, None]**2  # (N, 1)
     P_j = P[None, :] / rho[None, :]**2  # (1, N)
@@ -109,6 +127,7 @@ def compute_forces(pos, vel, rho, P):
     return f
 
 # Compute potential energy of the system
+@njit
 def compute_potential_energy(pos, mass):
     diff = pos[:, None, :] - pos[None, :, :]
     r2 = np.sum(diff**2, axis=2) + soft**2
