@@ -24,6 +24,7 @@ mu = 0.01               # Viscosity coefficient
 dt = 0.0001             # Time step
 steps = 1500            # Number of simulation steps
 soft = 0.04             # Softening length for gravity to avoid singularities
+epsilon = 1e-12         # Small value to prevent division by zero in calculation
 mass_minimum = 0.01     # Minimum mass for particles to avoid zero mass issues
 mass_maximum = 0.1      # Maximum mass for particles to avoid excessively large masses
 
@@ -110,7 +111,7 @@ def compute_forces_optimized(pos, vel, mass, rho, P, h, mu, G, soft):
             f_iz -= dz * inv_r3
 
             # --- SPH Pressure & Viscosity ---
-            if 1e-12 < dist < h:
+            if epsilon < dist < h:
                 h_r = h - dist
                 
                 # A. Pressure
@@ -255,7 +256,7 @@ def update(frame):
   
     # Calculate Average Temperature (P/rho)
     # We add a tiny epsilon to rho to avoid division by zero
-    avg_temp = np.mean(P / (rho + 1e-9))
+    avg_temp = np.mean(P / (rho + epsilon))
     temp_list.append(avg_temp)
 
 
