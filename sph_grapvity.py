@@ -16,14 +16,16 @@ def to_device_scalar(x):
 
 # SPH + self-gravity 3D particles
 G = 1.0                 # Gravitational constant
-N = 500                 # Number of particles
-h = 0.1                 # Smoothing length
-rho0 = 0.1              # Rest density
+N = 5000                # Number of particles
+h = 0.05                # Smoothing length
+rho0 = 0.01             # Rest density
 k = 20.0                # Gas stiffness 
 mu = 0.01               # Viscosity coefficient
 dt = 0.0001             # Time step
 steps = 1500            # Number of simulation steps
-soft = 0.02             # Softening length for gravity to avoid singularities
+soft = 0.04             # Softening length for gravity to avoid singularities
+mass_minimum = 0.01     # Minimum mass for particles to avoid zero mass issues
+mass_maximum = 0.1      # Maximum mass for particles to avoid excessively large masses
 
 dotsize = 10            # Adjust dot size based on number of particles for better visibility
 
@@ -39,7 +41,7 @@ y = r * np.sin(theta) * np.sin(phi)
 z = r * cos_theta
 pos = np.column_stack([x, y, z])
 vel = rng.normal(scale=0.05, size=(N, 3))
-mass = rng.uniform(0.01, 0.1, N)
+mass = rng.uniform(mass_minimum, mass_maximum, N)
 
 pos = asarray(pos)
 vel = asarray(vel)
@@ -47,7 +49,7 @@ mass = asarray(mass)
 
 # Compute density and pressure for each particle
 @njit(fastmath=True, parallel=True)
-def compute_density_pressure_optimized(pos, mass):
+def compute_density_pressure_optimized(pos, mass, h, rho0, k):
     N = pos.shape[0]
     rho = np.zeros(N)
     h2 = h**2
@@ -171,6 +173,7 @@ ax1 = fig.add_subplot(121, projection='3d')
 ax1.set_proj_type('persp')  # Enable perspective projection
 ax1.view_init(elev=20, azim=45)  # Set a nice viewing angle
 ax2 = fig.add_subplot(122)
+ax3 = ax2.twinx()  # Create a twin axis for Temperature
 pos_plot = pos
 scat = ax1.scatter(pos_plot[:,0], pos_plot[:,1], pos_plot[:,2], s=np.sqrt(mass) * dotsize, c='cyan')
 ax1.set_xlim(-1,1); ax1.set_ylim(-1,1); ax1.set_zlim(-1,1); ax1.set_facecolor('k')
@@ -181,12 +184,19 @@ ax1.axis('off')
 ke_list = []
 pe_list = []
 te_list = []
+temp_list = []
 line_ke, = ax2.plot([], [], 'r-', label='Kinetic Energy')
 line_pe, = ax2.plot([], [], 'b-', label='Potential Energy')
 line_te, = ax2.plot([], [], 'g-', label='Total Energy')
-ax2.legend()
+line_temp, = ax3.plot([], [], 'm--', label='Avg Temperature') # Magenta dashed line
+lines = [line_ke, line_pe, line_te, line_temp]
+labels = [l.get_label() for l in lines]
+ax2.legend(lines, labels, loc='upper left')
+
 ax2.set_xlabel('Time Step')
 ax2.set_ylabel('Energy')
+ax3.set_ylabel('Temperature (Diagnostic)', color='m')
+ax3.tick_params(axis='y', labelcolor='m')
 
 # Create energy text at figure level
 energy_text_obj = fig.text(0.5, 0.02, '', ha='center', va='bottom', fontsize=11, 
@@ -237,15 +247,22 @@ def integrate_and_ke(pos, vel, F, mass, dt):
 # Animation update function
 def update(frame):
     global pos, vel, energy_text_obj
-    rho, P = compute_density_pressure_optimized(pos, mass)
+    rho, P = compute_density_pressure_optimized(pos, mass, h, rho0, k)
     F = compute_forces_optimized(pos, vel, mass, rho, P, h, mu, G, soft)
     ke = integrate_and_ke(pos, vel, F, mass, dt)
     pe = float(compute_potential_energy_optimized(pos, mass, G, soft))
     te = ke + pe
   
+    # Calculate Average Temperature (P/rho)
+    # We add a tiny epsilon to rho to avoid division by zero
+    avg_temp = np.mean(P / (rho + 1e-9))
+    temp_list.append(avg_temp)
+
+
     ke_list.append(ke)
     pe_list.append(pe)
     te_list.append(te)
+    temp_list.append(avg_temp)
 
     pos_plot = pos
     scat._offsets3d = (pos_plot[:,0], pos_plot[:,1], pos_plot[:,2])
@@ -253,13 +270,17 @@ def update(frame):
     line_ke.set_data(range(len(ke_list)), ke_list)
     line_pe.set_data(range(len(pe_list)), pe_list)
     line_te.set_data(range(len(te_list)), te_list)
+    line_temp.set_data(range(len(temp_list)), temp_list)
     
     ax2.set_xlim(0, len(ke_list))
     ax2.relim()
     ax2.autoscale_view()
+    # Autoscale Temperature axis separately
+    ax3.relim()
+    ax3.autoscale_view()
     
     # Update energy text
-    energy_text = f'KE: {ke:.4f} | PE: {pe:.4f} | TE: {te:.4f}'
+    energy_text = f'KE: {ke:.4f} | PE: {pe:.4f} | TE: {te:.4f} | Avg Temp: {avg_temp:.4f}'
     energy_text_obj.set_text(energy_text)
 
     return scat, line_ke, line_pe, line_te
