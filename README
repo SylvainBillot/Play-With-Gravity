@@ -1,71 +1,160 @@
-Simple gravity simulator with Smoothed Particle Hydrodynamics
-# SPH Gravity Simulation
+# SPH + Self-Gravity 3D Particle Simulation
 
-This project is a Python implementation of a Smoothed Particle Hydrodynamics (SPH) simulation with self-gravity for 3D particles. The code uses NumPy for numerical computations and Matplotlib for visualization.
-
-## Table of Contents
-
-[Installation](#installation)
-
-[Usage](#usage)
-
-[Code Structure](#code-structure)
-
-[Dependencies](#dependencies)
-
-[License](#license)
-
-
-## Installation
-
-To run this project, you need to have Python 3 installed. You can install the required dependencies using pip:
-
-``bash
-pip install numpy matplotlib
-`
-
-## Usage
-
-To run the simulation, simply execute the sph_gravity.py script:
-
-`bash
-python sph_gravity.py
-`
-
-This will start the simulation and display a 3D plot of the particles along with energy plots.
-
-## Code Structure
-
-The code is organized into several functions and a main execution loop. Here's a brief overview:
-
-Helpers: Functions like asarray, to_device_scalar, and to_cpu are used for data type conversions.
-
-Constants: Simulation parameters such as gravitational constant, number of particles, and time step are defined.
-
-Data Initialization: Randomly generate initial particle positions, velocities, and masses within a sphere.
-
-SPH Kernel Functions: Functions like poly6, spiky_grad, and viscosity_lap implement the SPH kernels.
-
-Density and Pressure Calculation: compute_density_pressure computes the density and pressure for each particle.
-
-Force Computation: compute_forces calculates the forces on each particle due to pressure, viscosity, and gravity.
-
-Potential Energy: compute_potential_energy` calculates the potential energy of the system.
-
-Visualization: The simulation is visualized using Matplotlib, with real-time updates of particle positions and energy plots.
-
-
-## Dependencies
-
-NumPy: For numerical computations.
-
-Matplotlib: For visualization.
-
-
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+A real-time 3D particle simulation combining **Smoothed Particle Hydrodynamics (SPH)** with **self-gravity**, visualised live in Matplotlib. 5,000 particles are initialised inside a sphere and evolve under gas pressure, viscosity, and mutual gravitational attraction.
 
 ---
 
-This README provides a clear overview of the project, its usage, and the dependencies required to run it.
+## Physics
+
+The simulation couples two distinct force models at every time step.
+
+### Smoothed Particle Hydrodynamics
+
+SPH is a mesh-free method that approximates fluid quantities by convolving particle properties with a smooth kernel. Three kernels are used:
+
+| Quantity | Kernel | Formula |
+|---|---|---|
+| Density | Poly6 | $W = \frac{315}{64\pi h^9}(h^2 - r^2)^3$ |
+| Pressure gradient | Spiky | $\nabla W = -\frac{45}{\pi h^6}(h - r)^2$ |
+| Viscosity Laplacian | Viscosity | $\nabla^2 W = \frac{45}{\pi h^6}(h - r)$ |
+
+**Density** is estimated at particle $i$ as:
+
+$$\rho_i = \sum_j m_j W(|\mathbf{r}_i - \mathbf{r}_j|, h)$$
+
+**Pressure** follows a stiffness equation of state:
+
+$$P_i = k \max(\rho_i - \rho_0,\; 0)$$
+
+**SPH force** on particle $i$ combines the pressure gradient and a velocity-diffusing viscosity term:
+
+$$\mathbf{f}_i^{\text{SPH}} = \sum_{j \neq i} m_j \left[ -\left(\frac{P_i}{\rho_i^2} + \frac{P_j}{\rho_j^2}\right) \nabla W_{ij} + \mu \frac{\mathbf{v}_j - \mathbf{v}_i}{\rho_j} \nabla^2 W_{ij} \right]$$
+
+### Self-Gravity
+
+Every particle attracts every other via softened Newtonian gravity, which avoids force singularities when two particles get very close:
+
+$$\mathbf{f}_i^{\text{grav}} = -G \sum_{j \neq i} \frac{m_j\,(\mathbf{r}_i - \mathbf{r}_j)}{(|\mathbf{r}_i - \mathbf{r}_j|^2 + \epsilon_s^2)^{3/2}}$$
+
+where $\epsilon_s$ is the softening length.
+
+### Integration
+
+Symplectic (semi-implicit) Euler — velocity is updated before position, which conserves energy better than explicit Euler at no extra cost:
+
+```
+a  = F / m
+v += a * dt
+x += v * dt
+```
+
+---
+
+## Implementation & Optimisations
+
+### Spatial Hashing Grid (key optimisation)
+
+The dominant cost in a naive SPH implementation is the O(N²) neighbour search. With N = 5,000 that is 25 million pair checks **per pass**, and there are two passes per frame (density, then forces).
+
+The optimised version builds a **uniform grid** with cell size equal to the smoothing length `h` using a counting sort (no dynamic memory allocation). Each particle then only queries the 27 cells (3×3×3) around it, reducing the SPH complexity from **O(N²) to O(N·k)** where k is the average number of neighbours — typically 20–60 for these parameters.
+
+```
+build_grid  →  O(N)      counting sort, dynamic bounding box
+density     →  O(N·k)    27-cell neighbourhood query
+sph_forces  →  O(N·k)    same grid reused, no rebuild
+gravity     →  O(N²)     all-pairs (no spatial shortcut)
+```
+
+The grid is built **once per frame** and reused for both the density and force passes.
+
+### Gravity
+
+Gravity has no compact support (every particle affects every other at any distance), so the grid trick does not apply. It remains O(N²) and is parallelised with `prange`. Because gravity dominates the per-frame cost after SPH is accelerated, it is computed **every frame** — caching it would change the integrated trajectory.
+
+### Potential Energy Caching
+
+Potential energy is an O(N²) diagnostic quantity used only for the energy plot. It does **not** feed back into integration, so it is safe to recompute only every `PE_INTERVAL = 10` frames.
+
+### Numba JIT
+
+All hot loops are compiled with `@njit(fastmath=True, parallel=True, cache=True)`. `cache=True` writes the compiled binary to disk so subsequent runs skip recompilation.
+
+---
+
+## Parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `N` | 5000 | Number of particles |
+| `h` | 0.04 | SPH smoothing length (= grid cell size) |
+| `rho0` | 0.01 | Rest density |
+| `k` | 10.0 | Gas stiffness constant |
+| `mu` | 0.01 | Dynamic viscosity |
+| `G` | 1.0 | Gravitational constant |
+| `dt` | 0.0001 | Time step |
+| `steps` | 1500 | Total animation frames |
+| `soft` | 0.04 | Gravitational softening length |
+| `PE_INTERVAL` | 10 | Frames between potential energy recomputes |
+
+**Stability guidelines:**
+- Decreasing `dt` improves accuracy but slows the simulation. A good rule of thumb is `dt < h / v_max`.
+- Increasing `k` makes the fluid stiffer and requires a smaller `dt` to remain stable.
+- `soft` should be kept close to `h`; setting it much smaller risks force spikes when particles overlap.
+- Increasing `h` gives each particle more neighbours (smoother density estimate, more expensive per frame). Decreasing it below the mean inter-particle spacing produces very noisy densities.
+
+---
+
+## Requirements
+
+```
+python >= 3.9
+numpy
+numba
+matplotlib
+```
+
+Install with:
+
+```bash
+pip install numpy numba matplotlib
+```
+
+---
+
+## Running
+
+```bash
+python sph_optimized.py
+```
+
+The first run triggers Numba JIT compilation, which takes 10–30 seconds. Subsequent runs start immediately thanks to `cache=True`.
+
+---
+
+## Display
+
+The window is split into two panels.
+
+**Left — 3D particle view**
+Particles are rendered as cyan dots on a black background. Dot size scales with $\sqrt{m}$. The camera can be rotated by click-dragging and zoomed with the scroll wheel.
+
+**Right — Energy monitor**
+Four quantities are plotted live against simulation frame:
+
+| Line | Colour | Quantity |
+|---|---|---|
+| Kinetic Energy | Red | $\frac{1}{2}\sum_i m_i v_i^2$ |
+| Potential Energy | Blue | $-G\sum_{i<j} \frac{m_i m_j}{r_{ij}}$ (cached) |
+| Total Energy | Green | KE + PE |
+| Avg Temperature | Magenta (dashed) | $\langle P / \rho \rangle$ (diagnostic proxy) |
+
+A text readout at the bottom of the window shows the current values of all four quantities.
+
+---
+
+## Known Limitations
+
+- **Gravity is O(N²).** For N much larger than 5,000 consider a Barnes-Hut octree or a Fast Multipole Method to bring it to O(N log N) or O(N).
+- **No adaptive time-stepping.** A fixed `dt` is used. Fast-moving particles during collapse can cause instability if `dt` is too large.
+- **Weakly compressible.** The equation of state is a simple linear stiffness model, not a full compressible Euler solver. For highly supersonic flows the pressure scheme will be inaccurate.
+- **Single fluid.** All particles share the same SPH parameters. Multi-phase or multi-species simulations would require per-particle kernel parameters.
