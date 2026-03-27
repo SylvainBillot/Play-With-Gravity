@@ -4,19 +4,18 @@ from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
 
 # ── Simulation parameters ────────────────────────────────────────────────────
-G             = 1.0
-N             = 5000
-h             = 0.04     # SPH smoothing length (= grid cell size)
-rho0          = 0.01
-k             = 10.0
-mu            = 0.01
-dt            = 0.0001
-steps         = 1500
-soft          = 0.04
-epsilon       = 1e-12
-mass_min      = 0.01
-mass_max      = 0.1
-dotsize       = 10
+N             = 5000        # Number of particles
+G             = 1.0         # Gravitational constant (scaled for stability)
+soft          = 0.05        # Softening parameter for gravity
+h             = 0.05        # SPH smoothing length (= grid cell size)²
+rho0          = 0.01        # Rest density for pressure calculation
+k             = 50.0        # Pressure stiffness constant (higher → more incompressible)
+mu            = 0.05        # Viscosity coefficient (higher → more damping)
+dt_factor     = 1.0         # Time step factor for adaptive stepping (lower → more stable but slower)
+epsilon       = 1e-12       # Small value to avoid division by zero
+mass_min      = 0.01        # Minimum particle mass
+mass_max      = 0.1         # Maximum particle mass
+dotsize       = 10          # Size of dots in the plot
 
 # ── Caching interval for PE only (display-only, doesn't affect physics)
 PE_INTERVAL = 10   # recompute potential energy every N frames
@@ -234,13 +233,18 @@ def compute_potential_energy(pos, mass, G, soft):
 
 
 # ── Symplectic Euler integration + KE in one pass ────────────────────────────
+t = 0.0 
 @njit(fastmath=True, cache=True)
-def integrate(pos, vel, F, mass, dt):
+def integrate(pos, vel, F, mass, t):
+    global soft, epsilon, dt_factor
     accel = F / mass[:, np.newaxis]
+    max_a2 = np.max(np.sum(accel**2, axis=1))
+    dt = dt_factor * np.sqrt(soft / (np.sqrt(max_a2) + epsilon))
+    t += dt
     vel  += accel * dt
     pos  += vel   * dt
     ke    = 0.5 * np.sum(mass * (vel[:, 0]**2 + vel[:, 1]**2 + vel[:, 2]**2))
-    return ke
+    return t, dt, ke
 
 
 # ── Matplotlib setup ─────────────────────────────────────────────────────────
@@ -264,7 +268,7 @@ line_temp, = ax3.plot([], [], 'm--', label='Avg Temperature')
 
 lines = [line_ke, line_pe, line_te, line_temp]
 ax2.legend(lines, [l.get_label() for l in lines], loc='upper left')
-ax2.set_xlabel('Time Step');  ax2.set_ylabel('Energy')
+ax2.set_xlabel('Time');  ax2.set_ylabel('Energy')
 ax3.set_ylabel('Temperature (Diagnostic)', color='m')
 ax3.tick_params(axis='y', labelcolor='m')
 
@@ -287,9 +291,11 @@ fig.canvas.mpl_connect('scroll_event', on_scroll)
 # ── Simulation state ─────────────────────────────────────────────────────────
 frame_count = 0
 cached_pe   = 0.0
+time_list = []
+t_sim = 0.0
 
 def update(frame):
-    global pos, vel, frame_count, cached_pe
+    global pos, vel, frame_count, cached_pe, time_list, t_sim
 
     # Build spatial grid once per frame — shared by density AND force passes
     sids, cstart, nx, ny, nz, x0, y0, z0 = build_grid(pos, h)
@@ -303,7 +309,7 @@ def update(frame):
     f_grav = compute_gravity(pos, mass, G, soft)
 
     F  = f_sph + f_grav
-    ke = integrate(pos, vel, F, mass, dt)
+    t_sim, dt, ke = integrate(pos, vel, F, mass, t_sim)
 
     # PE is display-only → safe to amortize without affecting physics
     if frame_count % PE_INTERVAL == 0:
@@ -314,23 +320,30 @@ def update(frame):
 
     ke_list.append(ke);       pe_list.append(cached_pe)
     te_list.append(te);       temp_list.append(avg_temp)
+    time_list.append(t_sim)
     frame_count += 1
 
     # ── Update visuals ────────────────────────────────────────────────────────
     scat._offsets3d = (pos[:, 0], pos[:, 1], pos[:, 2])
 
-    t = range(len(ke_list))
-    line_ke.set_data(t, ke_list);   line_pe.set_data(t, pe_list)
-    line_te.set_data(t, te_list);   line_temp.set_data(t, temp_list)
+    line_ke.set_data(time_list, ke_list);   line_pe.set_data(time_list, pe_list)
+    line_te.set_data(time_list, te_list);   line_temp.set_data(time_list, temp_list)
 
-    ax2.set_xlim(0, len(ke_list));  ax2.relim();  ax2.autoscale_view()
+    if time_list:
+        ax2.set_xlim(time_list[0], time_list[-1])
+        
+    ax2.relim()
+    ax2.autoscale_view()
+    ax3.relim()
+    ax3.autoscale_view()
+
     ax3.relim();  ax3.autoscale_view()
 
     energy_text.set_text(
-        f'KE: {ke:.4f} | PE: {cached_pe:.4f} | TE: {te:.4f} | Avg Temp: {avg_temp:.4f}'
+        f'dt: {dt:.9f} | KE: {ke:.4f} | PE: {cached_pe:.4f} | TE: {te:.4f} | Avg Temp: {avg_temp:.4f}'
     )
     return scat, line_ke, line_pe, line_te, line_temp
 
 
-ani = FuncAnimation(fig, update, frames=steps, interval=0, blit=False)
+ani = FuncAnimation(fig, update, frames=24, interval=1, blit=False)
 plt.show()
