@@ -329,7 +329,7 @@ def update(frame):
     line_ke.set_data(time_list, ke_list);   line_pe.set_data(time_list, pe_list)
     line_te.set_data(time_list, te_list);   line_temp.set_data(time_list, temp_list)
 
-    if time_list:
+    if time_list.__len__() > 1:
         ax2.set_xlim(time_list[0], time_list[-1])
         
     ax2.relim()
