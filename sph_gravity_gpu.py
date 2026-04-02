@@ -24,7 +24,7 @@ dt_factor = 1.0
 epsilon = 1e-24  
 mass_min = 0.01  
 mass_max = 0.1  
-dotsize = 20  
+dotsize = 1  
 
 rho_min, rho_max = np.inf, -np.inf   
 cmap = plt.colormaps.get_cmap('autumn')       
