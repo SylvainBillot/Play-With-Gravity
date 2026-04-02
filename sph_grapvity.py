@@ -12,7 +12,7 @@ G = 1.0  # Gravitational constant (scaled for stability)
 soft = 0.05  # Softening parameter for gravity
 h = 0.05  # SPH smoothing length (= grid cell size)²
 rho0 = 0.01  # Rest density for pressure calculation
-k = 5.0  # Pressure stiffness constant (higher → more incompressible)
+k = 20.0  # Pressure stiffness constant (higher → more incompressible)
 mu = 0.01  # Viscosity coefficient (higher → more damping)
 H0 = 1e2   # Hubble constant en s⁻¹
 IE = 0.05 # Initial Speed factor 
