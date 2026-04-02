@@ -286,7 +286,7 @@ def compute_sph_forces(
 
 
 # Global constant for Barnes-Hut: higher = faster/less accurate, lower = slower/more accurate
-THETA = 0.5 
+THETA = 1.0 
 
 @njit(fastmath=True)
 def compute_gravity_barnes_hut(pos, mass, G, soft, theta=THETA):
@@ -353,13 +353,13 @@ def compute_gravity_barnes_hut(pos, mass, G, soft, theta=THETA):
                 curr = child
 
     # 3. Calculate Forces using the tree
-    total_pe = 0.0
+    total = 0.0
     for i in prange(N):
         p_pos = pos[i]
         # Stack for non-recursive traversal
         stack = [0]
         fx = fy = fz = 0.0
-        
+        p_pe = 0.0
         while len(stack) > 0:
             curr = stack.pop()
             
@@ -367,14 +367,15 @@ def compute_gravity_barnes_hut(pos, mass, G, soft, theta=THETA):
             dx = node_com[curr, 0] - p_pos[0]
             dy = node_com[curr, 1] - p_pos[1]
             dz = node_com[curr, 2] - p_pos[2]
-            r2 = dx*dx + dy*dy + dz*dz + epsilon
+            r2 = dx*dx + dy*dy + dz*dz + soft2
             r = np.sqrt(r2)
             
             # Barnes-Hut Criterion: Is the node far enough?
             if node_size[curr] / r < theta or np.all(node_children[curr] == -1):
                 # Approximation: Treat node as a single point mass
                 if r > epsilon:
-                    inv_r3 = 1.0 / (r2 * r + soft2)
+                    inv_r3 = 1.0 / (r * r * r)
+                    p_pe += (p_mass * node_mass[curr]) / r
                     coeff = G * node_mass[curr] * inv_r3
                     fx += dx * coeff
                     fy += dy * coeff
@@ -389,8 +390,9 @@ def compute_gravity_barnes_hut(pos, mass, G, soft, theta=THETA):
         forces[i, 0] = fx
         forces[i, 1] = fy
         forces[i, 2] = fz
+        total += p_pe
         
-    return 0.0, forces # PE calculation omitted for tree for simplicity
+    return -0.5 * G * total, forces # PE calculation omitted for tree for simplicity
 
 
 # ── Intégration avec facteur d’expansion (O(N)) ───────────────────────
