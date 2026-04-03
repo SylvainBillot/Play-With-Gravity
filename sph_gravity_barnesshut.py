@@ -14,6 +14,8 @@ h = 0.05  # SPH smoothing length (= grid cell size)²
 rho0 = 0.01  # Rest density for pressure calculation
 k = 20.0  # Pressure stiffness constant (higher → more incompressible)
 mu = 0.01  # Viscosity coefficient (higher → more damping)
+D = 1e9 # densité de la matière
+verynearfactor = 1.0 # factor to increase the force when particles are very near
 H0 = 1e2   # Hubble constant en s⁻¹
 IE = 0.05 # Initial Speed factor 
 Omega_m = 0.3          # densité matière
@@ -43,12 +45,12 @@ def initializeSphere():
 
     return  np.column_stack(
         [r_s * np.sin(theta) * np.cos(phi), r_s * np.sin(theta) * np.sin(phi), r_s * cos_th]
-    ).astype(np.float64)
+    ).astype(np.float64), rng.uniform(mass_min, mass_max, N).astype(np.float64), rng.normal(scale=IE, size=(N, 3)).astype(np.float64)
 
 def initializeCubeRandom():
     return np.column_stack(
         [rng.uniform(-R/2.0,R/2.0, N), rng.uniform(-R/2.0,R/2.0, N), rng.uniform(-R/2.0,R/2.0, N)]
-    ).astype(np.float64)
+    ).astype(np.float64), rng.uniform(mass_min, mass_max, N).astype(np.float64), rng.normal(scale=IE, size=(N, 3)).astype(np.float64)
 
 def initializeCube():  # cube centered at origin with side length 2R
     x = np.linspace(-R, R, L)
@@ -58,7 +60,7 @@ def initializeCube():  # cube centered at origin with side length 2R
     X = X.flatten()
     Y = Y.flatten()
     Z = Z.flatten()
-    return np.column_stack([X, Y, Z]).astype(np.float64)
+    return np.column_stack([X, Y, Z]).astype(np.float64), rng.uniform(mass_min, mass_max, N).astype(np.float64), rng.normal(scale=IE, size=(N, 3)).astype(np.float64)
 
 def initializeParticles():
     # return initializeSphere()
@@ -66,30 +68,14 @@ def initializeParticles():
     return initializeCube()
 
 #pos = initializeSphere()
-pos = initializeParticles()
-vel = rng.normal(scale=IE, size=(N, 3)).astype(np.float64)
-mass = rng.uniform(mass_min, mass_max, N).astype(np.float64)
+pos, mass, vel  = initializeParticles()
 
 
 # ── Simulation functions ───────────────────────────────────────────────────────
-@njit
-def calculate_forces(r, v, m, rho, h, soft, G, k, mu):
-    N = len(r)
-    F = np.zeros_like(r)
-    P = np.zeros_like(r)
-    T = np.zeros_like(r)
-    for i in prange(N):
-        for j in prange(i + 1, N):
-            dr = r[i] - r[j]
-            dist = np.linalg.norm(dr)
-            if dist > 0:
-                f = G * m[i] * m[j] / (dist ** 2 + soft ** 2)
-                F[i] += f * dr / dist
-                F[j] -= f * dr / dist
+@njit(cache=True)
+def rFromMass(mass, D):
+    return ((3 * mass) / (4 * np.pi * D))**(1/3)
 
-                # Pressure force
-                rho_i = rho[i]
-                rho_j
 
 @njit(cache=True)
 def cosmology(a, H0, Omega_m, Omega_L):
@@ -213,6 +199,43 @@ def compute_density_pressure(
     P = k * np.maximum(rho - rho0, 0.0)
     return rho, P
 
+@njit(fastmath=True, cache=True)
+def calculer_force_evitement_fast(pos1, pos2, vel1, vel2, d_min, k=100.0):
+    # Calcul manuel de la distance pour éviter l'overhead de linalg.norm
+    dx = pos1[0] - pos2[0]
+    dy = pos1[1] - pos2[1]
+    dz = pos1[2] - pos2[2]
+    
+    dist_sq = dx*dx + dy*dy + dz*dz
+    
+    # Early exit ultra-rapide avec le carré de la distance
+    if dist_sq > d_min*d_min or dist_sq < 1e-18:
+        return np.array([0.0, 0.0, 0.0])
+
+    distance = np.sqrt(dist_sq)
+    inv_dist = 1.0 / distance
+    
+    # Vecteur unitaire (Normal)
+    nx, ny, nz = dx * inv_dist, dy * inv_dist, dz * inv_dist
+    
+    # Vitesse relative
+    v_rel_x = vel1[0] - vel2[0]
+    v_rel_y = vel1[1] - vel2[1]
+    v_rel_z = vel1[2] - vel2[2]
+    
+    # Produit scalaire (v_relative . n)
+    v_dot_n = v_rel_x * nx + v_rel_y * ny + v_rel_z * nz
+    
+    # Intensité avec amortissement
+    # On utilise 0.5 * v_dot_n comme dans ton code original
+    intensite = k * (d_min - distance) - (0.5 * v_dot_n)
+    
+    # On ne renvoie la force que si elle est répulsive (intensite > 0)
+    # pour éviter que l'amortissement n' "aspire" les particules
+    if intensite <= 0:
+        return np.array([0.0, 0.0, 0.0])
+        
+    return np.array([intensite * nx, intensite * ny, intensite * nz])
 
 # ── SPH forces (O(N) with grid) ─────────────────────────────────────────────
 @njit(fastmath=True, parallel=True, cache=True)
@@ -259,7 +282,7 @@ def compute_sph_forces(
                             continue
                         dist = np.sqrt(r2)
                         h_r = h - dist
-                        
+                         
                         # Pressure gradient
                         ps = (
                             (pri + P[j] / (rho[j] * rho[j]))
@@ -279,6 +302,14 @@ def compute_sph_forces(
                         fy -= (vel[i, 1] - vel[j, 1]) * vs
                         fz -= (vel[i, 2] - vel[j, 2]) * vs
 
+                        d_min = rFromMass(mass[i],D) + rFromMass(mass[j],D)
+
+                        # Fusion 
+                        fe = calculer_force_evitement_fast(pos[i], pos[j], vel[i], vel[j], d_min, verynearfactor)
+                        fx += fe[0]
+                        fy += fe[1]
+                        fz += fe[2]
+                            
         f[i, 0] = fx
         f[i, 1] = fy
         f[i, 2] = fz
@@ -394,7 +425,6 @@ def compute_gravity_barnes_hut(pos, mass, G, soft, theta=THETA):
         
     return -0.5 * G * total, forces # PE calculation omitted for tree for simplicity
 
-
 # ── Intégration avec facteur d’expansion (O(N)) ───────────────────────
 t = 0.0
 a = a0                     # facteur d’échelle courant
@@ -428,6 +458,12 @@ def integrate(pos, vel, F, mass, t, a):
 
     # 7. Énergie cinétique (reste en coordonnées comobiles)
     ke = 0.5 * np.sum(mass * (vel[:, 0]**2 + vel[:, 1]**2 + vel[:, 2]**2))
+
+    # recentre
+    pos -= (mass @ pos) / mass.sum()
+
+
+
     return t, a, dt, ke
 
 
